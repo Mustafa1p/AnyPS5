@@ -153,6 +153,10 @@ if(BUILD_TESTING)
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converted_wide_contract.py
                 $<TARGET_FILE:relinker> ${PATCHED_DIR})
             set_tests_properties(converted_wide_contract PROPERTIES TIMEOUT 30)
+            add_test(NAME converted_barrier_contract COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converted_barrier_contract.py
+                $<TARGET_FILE:relinker> ${PATCHED_DIR})
+            set_tests_properties(converted_barrier_contract PROPERTIES TIMEOUT 30)
         endif()
     endif()
     add_test_executable(guest_offline_imports_tests tests/GuestOfflineImports.cpp)
