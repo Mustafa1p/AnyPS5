@@ -4,10 +4,16 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <stdexcept>
 #include <thread>
+#ifdef _WIN32
+#include <io.h>
+#else
+#include <unistd.h>
+#endif
 
 extern "C" {
 extern const std::uint8_t in6addr_any_nid_postfix[16];
@@ -79,6 +85,87 @@ static void Require(bool condition) {
 
 static bool Failed(std::int64_t result, int error) {
     return result == static_cast<int>(0x80410100u | static_cast<unsigned>(error)) && *sceNetErrnoLoc() == error;
+}
+
+static std::int64_t MixedSeek(int descriptor, std::int64_t offset, int origin) {
+#ifdef _WIN32
+    return _lseeki64(descriptor, offset, origin);
+#else
+    return lseek(descriptor, offset, origin);
+#endif
+}
+
+static int MixedRead(int descriptor, void* buffer, unsigned size) {
+#ifdef _WIN32
+    return _read(descriptor, buffer, size);
+#else
+    return static_cast<int>(read(descriptor, buffer, size));
+#endif
+}
+
+static int MixedWrite(int descriptor, const void* buffer, unsigned size) {
+#ifdef _WIN32
+    return _write(descriptor, buffer, size);
+#else
+    return static_cast<int>(write(descriptor, buffer, size));
+#endif
+}
+
+static void CheckMixedSelect(int receiver, int sender, const std::array<std::uint8_t, 16>& address) {
+    auto* file = std::tmpfile();
+    Require(file != nullptr);
+#ifdef _WIN32
+    const int descriptor = _fileno(file);
+#else
+    const int descriptor = fileno(file);
+#endif
+    Require(descriptor >= 0 && descriptor < 32 && receiver >= 32 && receiver < 1023);
+    const char payload[] = "independent native select disk payload";
+    Require(MixedWrite(descriptor, payload, sizeof(payload)) == sizeof(payload));
+    Require(MixedSeek(descriptor, 5, SEEK_SET) == 5);
+    struct GuardedSet {
+        std::uint64_t before = 0x21394be8657acf01;
+        std::array<std::uint64_t, 16> bits{};
+        std::uint64_t after = 0xd1b342968af05ec7;
+        bool operator==(const GuardedSet&) const = default;
+    } readable;
+    readable.bits[descriptor / 64] |= std::uint64_t{1} << (descriptor % 64);
+    readable.bits[receiver / 64] |= std::uint64_t{1} << (receiver % 64);
+    readable.bits[15] |= std::uint64_t{1} << 63;
+    const auto bothReady = readable;
+    auto onlyDisk = readable;
+    onlyDisk.bits[receiver / 64] &= ~(std::uint64_t{1} << (receiver % 64));
+    struct GuardedTimeout {
+        std::uint64_t before = 0x763819e5a4bf20dc;
+        std::array<std::int64_t, 2> value{2, 123456};
+        std::uint64_t after = 0xc37d21094ba86ef5;
+        bool operator==(const GuardedTimeout&) const = default;
+    } timeout;
+    const auto originalTimeout = timeout;
+    const auto start = std::chrono::steady_clock::now();
+    Require(select_nid_postfix(receiver + 1, readable.bits.data(), nullptr, nullptr, timeout.value.data()) == 1);
+    Require(std::chrono::steady_clock::now() - start < std::chrono::seconds(1));
+    Require(readable == onlyDisk && timeout == originalTimeout);
+    Require(MixedSeek(descriptor, 0, SEEK_CUR) == 5);
+    const char datagram[] = "mixed select datagram";
+    Require(sceNetSendto(sender, datagram, sizeof(datagram), 0, address.data(), address.size()) == sizeof(datagram));
+    std::array<std::uint64_t, 16> socketReady{};
+    socketReady[receiver / 64] |= std::uint64_t{1} << (receiver % 64);
+    const std::int64_t socketWait[2]{1, 0};
+    Require(select_nid_postfix(receiver + 1, socketReady.data(), nullptr, nullptr, socketWait) == 1);
+    readable = bothReady;
+    Require(select_nid_postfix(receiver + 1, readable.bits.data(), nullptr, nullptr, timeout.value.data()) == 2);
+    Require(readable == bothReady && timeout == originalTimeout);
+    std::array<char, sizeof(datagram)> received{};
+    Require(sceNetRecvfrom(receiver, received.data(), received.size(), 0, nullptr, nullptr) == sizeof(datagram));
+    Require(std::memcmp(received.data(), datagram, sizeof(datagram)) == 0);
+    Require(MixedSeek(descriptor, 0, SEEK_CUR) == 5);
+    Require(MixedSeek(descriptor, 0, SEEK_SET) == 0);
+    std::array<char, sizeof(payload) + 4> contents{};
+    Require(MixedRead(descriptor, contents.data(), contents.size()) == sizeof(payload));
+    Require(std::memcmp(contents.data(), payload, sizeof(payload)) == 0);
+    Require(MixedSeek(descriptor, 5, SEEK_SET) == 5);
+    Require(std::fclose(file) == 0);
 }
 
 static void CheckPoolStats() {
@@ -310,9 +397,14 @@ int main() {
     const std::int64_t bad_timeout[2]{0, 1000000};
     Require(select_nid_postfix(udp_receiver + 1, readable, nullptr, nullptr, bad_timeout) == -1 && *__error_nid_postfix() == 22);
     Require(select_nid_postfix(1025, nullptr, nullptr, nullptr, poll_now) == -1 && *__error_nid_postfix() == 22);
+    CheckMixedSelect(udp_receiver, udp_sender, address);
     CheckMessages(udp_receiver, udp_sender, address);
     Require(sceNetSocketClose(udp_sender) == 0);
     Require(sceNetSocketClose(udp_receiver) == 0);
+    readable[udp_receiver / 64] |= std::uint64_t{1} << (udp_receiver % 64);
+    const auto closedReadable = std::to_array(readable);
+    Require(select_nid_postfix(udp_receiver + 1, readable, nullptr, nullptr, poll_now) == -1 && *__error_nid_postfix() == 9);
+    Require(std::equal(closedReadable.begin(), closedReadable.end(), std::begin(readable)));
 
     const int resolver = sceNetResolverCreate("guest-sce-net", 0, 0);
     Require(resolver >= 0);

@@ -6,13 +6,23 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <thread>
 #include <vector>
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+extern "C" _invalid_parameter_handler _set_thread_local_invalid_parameter_handler(_invalid_parameter_handler);
+#else
+#include <sys/stat.h>
+#endif
 
 namespace {
 
 constexpr int GuestEinval = 22;
+constexpr int GuestEbadf = 9;
+constexpr int GuestEio = 5;
 constexpr int SelectDescriptorLimit = 1024;
 
 struct GuestTimeval {
@@ -21,6 +31,44 @@ struct GuestTimeval {
 };
 
 std::atomic<KernelSocketPoll::Poller> g_socketPoller{nullptr};
+
+enum class DescriptorKind { RegularFile, Other, Invalid, Failed };
+
+#ifdef _WIN32
+void IgnoreInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, std::uintptr_t) {}
+#endif
+
+DescriptorKind InspectDescriptor(int descriptor) {
+#ifdef _WIN32
+    const auto previous = _set_thread_local_invalid_parameter_handler(IgnoreInvalidParameter);
+    const auto native = ::_get_osfhandle(descriptor);
+    _set_thread_local_invalid_parameter_handler(previous);
+    if (native == -1 || native == -2) return DescriptorKind::Invalid;
+    const auto handle = reinterpret_cast<HANDLE>(native);
+    ::SetLastError(ERROR_SUCCESS);
+    const auto type = ::GetFileType(handle);
+    if (type == FILE_TYPE_UNKNOWN && ::GetLastError() == ERROR_INVALID_HANDLE) return DescriptorKind::Invalid;
+    if (type != FILE_TYPE_DISK) return DescriptorKind::Other;
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!::GetFileInformationByHandle(handle, &information)) return DescriptorKind::Failed;
+    return (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ? DescriptorKind::RegularFile : DescriptorKind::Other;
+#else
+    struct stat information{};
+    if (::fstat(descriptor, &information) != 0) return errno == EBADF ? DescriptorKind::Invalid : DescriptorKind::Failed;
+    return S_ISREG(information.st_mode) ? DescriptorKind::RegularFile : DescriptorKind::Other;
+#endif
+}
+
+std::chrono::steady_clock::time_point Deadline(std::chrono::steady_clock::time_point start, const GuestTimeval* limit) {
+    using Clock = std::chrono::steady_clock;
+    if (limit == nullptr) return Clock::time_point::max();
+    const auto room = Clock::duration::max() - std::max(start.time_since_epoch(), Clock::duration::zero());
+    const auto seconds = std::chrono::duration_cast<std::chrono::seconds>(room);
+    if (limit->seconds > seconds.count()) return Clock::time_point::max();
+    const auto requestedSeconds = std::chrono::seconds(limit->seconds);
+    if (std::chrono::microseconds(limit->microseconds) > room - requestedSeconds) return Clock::time_point::max();
+    return start + requestedSeconds + std::chrono::microseconds(limit->microseconds);
+}
 
 bool DescriptorSet(const void* set, int descriptor) {
     return set != nullptr && ((static_cast<const std::uint64_t*>(set)[descriptor / 64] >> (descriptor % 64)) & 1u) != 0;
@@ -66,26 +114,41 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
         if (events != 0) entries.push_back({descriptor, events, 0});
     }
     const auto start = std::chrono::steady_clock::now();
-    const auto deadline = limit == nullptr ? std::chrono::steady_clock::time_point::max()
-        : start + std::chrono::seconds(limit->seconds) + std::chrono::microseconds(limit->microseconds);
+    const auto deadline = Deadline(start, limit);
+    bool firstPoll = true;
     for (;;) {
         int waitMilliseconds = 100;
         if (limit != nullptr) {
-            const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - std::chrono::steady_clock::now()).count();
-            waitMilliseconds = static_cast<int>(std::clamp<std::int64_t>((remaining + 999) / 1000, 0, 100));
+            const auto now = std::chrono::steady_clock::now();
+            if (now >= deadline) waitMilliseconds = 0;
+            else if (deadline != std::chrono::steady_clock::time_point::max()) {
+                const auto remaining = std::chrono::duration_cast<std::chrono::microseconds>(deadline - now).count();
+                waitMilliseconds = static_cast<int>(std::clamp<std::int64_t>((remaining + 999) / 1000, 0, 100));
+            }
         }
+        if (firstPoll) waitMilliseconds = 0;
+        firstPoll = false;
         if (!entries.empty()) {
             const auto poller = g_socketPoller.load();
-            if (poller == nullptr) NotImplemented_nid_no_patch("select on descriptors that are not libSceNet sockets");
-            for (auto& entry : entries) entry.revents = 0;
-            const int result = poller(entries.data(), static_cast<int>(entries.size()), waitMilliseconds);
+            for (auto& entry : entries) entry.revents = KernelSocketPoll::Unknown;
+            const int result = poller == nullptr ? 0 : poller(entries.data(), static_cast<int>(entries.size()), waitMilliseconds);
             if (result < 0) {
                 *__error_nid_postfix() = -result;
                 return -1;
             }
+            for (auto& entry : entries) {
+                if ((entry.revents & KernelSocketPoll::Unknown) == 0) continue;
+                const auto kind = InspectDescriptor(entry.descriptor);
+                if (kind == DescriptorKind::Invalid || kind == DescriptorKind::Failed) {
+                    *__error_nid_postfix() = kind == DescriptorKind::Invalid ? GuestEbadf : GuestEio;
+                    return -1;
+                }
+                if (kind != DescriptorKind::RegularFile) NotImplemented_nid_no_patch("select on non-regular file descriptors");
+                if ((entry.events & KernelSocketPoll::Urgent) != 0) NotImplemented_nid_no_patch("select regular-file exception readiness");
+                entry.revents = entry.events & (KernelSocketPoll::Readable | KernelSocketPoll::Writable);
+            }
             int ready = 0;
             for (const auto& entry : entries) {
-                if ((entry.revents & KernelSocketPoll::Unknown) != 0) NotImplemented_nid_no_patch("select on descriptors that are not libSceNet sockets");
                 const bool readable = (entry.events & KernelSocketPoll::Readable) != 0 && (entry.revents & (KernelSocketPoll::Readable | KernelSocketPoll::HangUp | KernelSocketPoll::Error)) != 0;
                 const bool writable = (entry.events & KernelSocketPoll::Writable) != 0 && (entry.revents & (KernelSocketPoll::Writable | KernelSocketPoll::Error)) != 0;
                 const bool urgent = (entry.events & KernelSocketPoll::Urgent) != 0 && (entry.revents & KernelSocketPoll::Urgent) != 0;

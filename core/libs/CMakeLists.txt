@@ -144,6 +144,10 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converted_library_contract.py
             $<TARGET_FILE:relinker> ${PATCHED_DIR})
         set_tests_properties(converted_library_contract_smoke PROPERTIES TIMEOUT 30)
+        add_test(NAME converted_select_contract COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converted_select_contract.py
+            $<TARGET_FILE:relinker> ${PATCHED_DIR})
+        set_tests_properties(converted_select_contract PROPERTIES TIMEOUT 30)
     endif()
     add_test_executable(guest_offline_imports_tests tests/GuestOfflineImports.cpp)
     target_include_directories(guest_offline_imports_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
