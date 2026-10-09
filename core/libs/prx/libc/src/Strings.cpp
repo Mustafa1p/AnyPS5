@@ -48,6 +48,8 @@ auto ParseAsciiPrefix(const char16_t* text, char16_t** end, TParse parse) {
 
 extern "C" {
 
+std::size_t APS5_VABI wcrtomb_nid_postfix(char*, std::uint16_t, void*);
+
 void* APS5_VABI memset_nid_postfix(void* s, int c, size_t n) {
     // APS5_LOG_OUT("s=%p c=%d n=%zu", s, c, n);
     return std::memset(s, c, n);
@@ -438,8 +440,26 @@ size_t APS5_VABI strxfrm_nid_postfix(char* destination, const char* source, size
     return std::strxfrm(destination, source, count);
 }
 
-size_t APS5_VABI wcsrtombs_nid_postfix(char* destination, const wchar_t** source, size_t count, mbstate_t* state) {
-    return std::wcsrtombs(destination, source, count, state);
+size_t APS5_VABI wcsrtombs_nid_postfix(char* destination, const std::uint16_t** source, size_t count, void* state) {
+    const auto* current = *source;
+    size_t converted = 0;
+    while (!destination || converted < count) {
+        char byte;
+        const auto length = wcrtomb_nid_postfix(&byte, *current, state);
+        if (length == static_cast<size_t>(-1)) {
+            if (destination) *source = current;
+            return length;
+        }
+        if (destination) destination[converted] = byte;
+        if (byte == '\0') {
+            if (destination) *source = nullptr;
+            return converted;
+        }
+        ++current;
+        ++converted;
+    }
+    *source = current;
+    return converted;
 }
 
 }

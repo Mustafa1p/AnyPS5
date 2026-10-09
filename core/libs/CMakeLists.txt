@@ -138,6 +138,13 @@ if(BUILD_TESTING)
         target_link_options(patched_libraries_tests PRIVATE -static -static-libgcc -static-libstdc++)
     endif()
     add_test(NAME patched_libraries COMMAND patched_libraries_tests ${PATCHED_DIR})
+    if(Python3_Interpreter_FOUND)
+        add_dependencies(patched_libraries_tests relinker)
+        add_test(NAME converted_library_contract_smoke COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converted_library_contract.py
+            $<TARGET_FILE:relinker> ${PATCHED_DIR})
+        set_tests_properties(converted_library_contract_smoke PROPERTIES TIMEOUT 30)
+    endif()
     add_test_executable(guest_offline_imports_tests tests/GuestOfflineImports.cpp)
     target_include_directories(guest_offline_imports_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(guest_offline_imports_tests PRIVATE libSceHttp libSceNpEntitlementAccess libSceRudp libc)

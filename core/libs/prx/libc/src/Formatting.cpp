@@ -142,16 +142,20 @@ int ScanGuest(const char* buffer, const char* format, bool secure, NextPointer n
 
 extern "C" {
 
-int APS5_VABI swprintf_nid_postfix(wchar_t* output, size_t capacity, const wchar_t* format, ...) {
+int APS5_VABI vswprintf_nid_postfix(char16_t*, size_t, const char16_t*, VaList*);
+
+int APS5_VABI swprintf_nid_postfix(char16_t* output, size_t capacity, const char16_t* format, ...) {
 #ifdef _WIN32
     __builtin_sysv_va_list args;
     __builtin_sysv_va_start(args, format);
-    const int result = LibcDetail::FormatWideWindows(output, capacity, format, args);
-    __builtin_sysv_va_end(args);
 #else
     std::va_list args;
     va_start(args, format);
-    const int result = std::vswprintf(output, capacity, format, args);
+#endif
+    const int result = vswprintf_nid_postfix(output, capacity, format, reinterpret_cast<VaList*>(args));
+#ifdef _WIN32
+    __builtin_sysv_va_end(args);
+#else
     va_end(args);
 #endif
     return result;

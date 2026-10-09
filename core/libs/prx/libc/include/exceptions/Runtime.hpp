@@ -9,6 +9,7 @@
 #include "prx/libc/include/specifics/itanium/CxxAbi.hpp"
 
 namespace LibcException {
+using GuestDestructor = void (APS5_VABI *)(void*);
 struct Header {
     std::type_info* type {};
     void (*destructor)(void*) {};
@@ -54,6 +55,8 @@ void Release(void*);
 extern "C" {
 void* APS5_VABI __cxa_allocate_exception_nid_postfix(std::size_t);
 void APS5_VABI __cxa_free_exception_nid_postfix(void*);
+LibcException::Header* APS5_VABI __cxa_init_primary_exception_nid_postfix(void*, std::type_info*, LibcException::GuestDestructor) noexcept;
+void* APS5_VABI __dynamic_cast_nid_postfix(const void*, const __cxxabiv1::__class_type_info*, const __cxxabiv1::__class_type_info*, std::ptrdiff_t);
 [[noreturn]] void APS5_VABI __cxa_throw_nid_postfix(void*, std::type_info*, void (*)(void*));
 [[noreturn]] void APS5_VABI __cxa_rethrow_nid_postfix();
 void* APS5_VABI __cxa_begin_catch_nid_postfix(void*);

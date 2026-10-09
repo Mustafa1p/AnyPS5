@@ -245,11 +245,11 @@ void APS5_VABI __cxa_free_exception_nid_postfix(void* object) {
     InvokeTerminate(header->terminate);
 }
 
-LibcException::Header* __cxa_init_primary_exception_nid_postfix(void* object, std::type_info* type, void (*destructor)(void*)) {
+LibcException::Header* APS5_VABI __cxa_init_primary_exception_nid_postfix(void* object, std::type_info* type, LibcException::GuestDestructor destructor) noexcept {
     using namespace LibcException;
     auto* header = FromObject(object);
     header->type = type;
-    header->destructor = destructor;
+    header->destructor = reinterpret_cast<void (*)(void*)>(destructor);
     header->terminate = terminateHandler.load(std::memory_order_acquire);
     header->adjusted = object;
     header->unwind.exception_class = PrimaryClass;
@@ -366,7 +366,7 @@ void APS5_VABI __cxa_rethrow_primary_exception_nid_postfix(void* object) {
     InvokeTerminate(header->terminate);
 }
 
-void* __dynamic_cast_nid_postfix(const void* source, const __cxxabiv1::__class_type_info* sourceType,
+void* APS5_VABI __dynamic_cast_nid_postfix(const void* source, const __cxxabiv1::__class_type_info* sourceType,
                                const __cxxabiv1::__class_type_info* destinationType, std::ptrdiff_t) {
     using namespace LibcException;
     if (!source) return nullptr;

@@ -1,3 +1,4 @@
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
@@ -18,10 +19,18 @@ namespace {
 
 using GuestNewHandler = void (APS5_VABI*)();
 
-GuestNewHandler g_newHandler = nullptr;
+std::atomic<GuestNewHandler> g_newHandler{nullptr};
 
 void* Allocate(std::size_t size) {
-    return ApplicationHeapAllocate_nid_no_patch(size == 0 ? 1 : size);
+    for (;;) {
+        try {
+            return ApplicationHeapAllocate_nid_no_patch(size == 0 ? 1 : size);
+        } catch (const std::bad_alloc&) {
+            const auto handler = g_newHandler.load();
+            if (!handler) throw;
+            handler();
+        }
+    }
 }
 
 }
@@ -57,14 +66,12 @@ const char* APS5_VABI setlocale_nid_postfix(int category, const char* locale) {
     return nullptr;
 }
 
-GuestNewHandler APS5_VABI _ZSt15set_new_handlerPFvvE_nid_postfix(GuestNewHandler handler) {
-    const auto previous = g_newHandler;
-    g_newHandler = handler;
-    return previous;
+GuestNewHandler APS5_VABI _ZSt15set_new_handlerPFvvE_nid_postfix(GuestNewHandler handler) noexcept {
+    return g_newHandler.exchange(handler);
 }
 
-GuestNewHandler APS5_VABI _ZSt15get_new_handlerv_nid_postfix() {
-    return g_newHandler;
+GuestNewHandler APS5_VABI _ZSt15get_new_handlerv_nid_postfix() noexcept {
+    return g_newHandler.load();
 }
 
 unsigned char _ZSt7nothrow_nid_postfix = 0;
@@ -80,7 +87,7 @@ void* APS5_VABI _Znam_nid_postfix(std::size_t size) {
 void* APS5_VABI _ZnwmRKSt9nothrow_t_nid_postfix(std::size_t size, const void*) noexcept {
     try {
         return Allocate(size);
-    } catch (const std::bad_alloc&) {
+    } catch (...) {
         return nullptr;
     }
 }
@@ -88,7 +95,7 @@ void* APS5_VABI _ZnwmRKSt9nothrow_t_nid_postfix(std::size_t size, const void*) n
 void* APS5_VABI _ZnamRKSt9nothrow_t_nid_postfix(std::size_t size, const void*) noexcept {
     try {
         return Allocate(size);
-    } catch (const std::bad_alloc&) {
+    } catch (...) {
         return nullptr;
     }
 }

@@ -15,6 +15,7 @@
 #include "prx/libc/include/General.hpp"
 #include "prx/libc/include/specifics/gcc/AtomicOps.hpp"
 #include "prx/libc/include/FileStream.hpp"
+#include "prx/libc/include/Shutdown.hpp"
 
 namespace {
 
@@ -43,7 +44,9 @@ int APS5_VABI __cxa_atexit_nid_postfix(void (APS5_VABI *func)(void*), void* arg,
     g_exitDestructors.push_back({func, arg, dsoHandle});
     if (!g_exitRunnerRegistered) {
         g_exitRunnerRegistered = true;
-        std::atexit([] { CxaFinalize_nid_no_patch(nullptr); });
+        std::atexit([] {
+            if (!LibcAbnormalTerminationRequested()) CxaFinalize_nid_no_patch(nullptr);
+        });
     }
     return 0;
 }

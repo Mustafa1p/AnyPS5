@@ -393,13 +393,26 @@ BusyLoop prepareBusyLoop(std::uint32_t iterations) {
     alignas(256) static const std::array<std::uint32_t, 12> code{
         0xbe850380, 0x7e040281, 0xd5690002, 0x00020502, 0x4a040481, 0x80058105,
         0xbf070405, 0xbf85fffa, 0x7e020280, 0xe0701000, 0x80000201, 0xbf810000};
-    static Shader shader{};
-    shader.file_header = 0x34333231;
-    shader.version = 0x18;
-    shader.header_size = sizeof(Shader);
-    shader.shader_size = sizeof(code);
-    shader.code = code.data();
-    AgcDriverRegisterShader_nid_postfix(&shader);
+    struct Header {
+        Shader shader{};
+        std::array<ShaderRegister, 7> registers{};
+        ShaderSpecialRegs specials{};
+    };
+    static Header header;
+    const auto program = reinterpret_cast<std::uintptr_t>(code.data());
+    header.shader.file_header = 0x34333231;
+    header.shader.version = 0x18;
+    header.shader.header_size = sizeof(header);
+    header.shader.shader_size = sizeof(code);
+    header.shader.code = code.data();
+    header.shader.sh_registers = header.registers.data();
+    header.shader.num_sh_registers = header.registers.size();
+    header.shader.specials = &header.specials;
+    header.registers = {{{0x20c, static_cast<std::uint32_t>(program >> 8u)},
+        {0x20d, static_cast<std::uint32_t>(program >> 40u)}, {0x207, 32},
+        {0x208, 1}, {0x209, 1}, {0x212, 0}, {0x213, 5u << 1u}}};
+    header.specials.dispatch_modifier = 0x8000u;
+    AgcDriverRegisterShader_nid_postfix(&header.shader);
     std::int64_t physical = 0;
     void* mapped = nullptr;
     check(sceKernelAllocateDirectMemory(0, 0x7fffffffffll, 65536, 65536, 0, &physical) == 0, "direct memory allocation failed");
@@ -408,7 +421,6 @@ BusyLoop prepareBusyLoop(std::uint32_t iterations) {
     auto* label = &static_cast<volatile std::uint32_t*>(mapped)[64];
     *result = 0;
     *label = 0;
-    const auto program = reinterpret_cast<std::uintptr_t>(code.data());
     const auto output = reinterpret_cast<std::uintptr_t>(result);
     const auto target = reinterpret_cast<std::uintptr_t>(label);
     return {result, label, {
