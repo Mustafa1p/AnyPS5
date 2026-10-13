@@ -274,12 +274,12 @@ void APS5_VABI __cxa_free_exception_nid_postfix(void* object) {
     ThrowFromSite(object, type, destructor, __builtin_return_address(0));
 }
 
-LibcException::Header* APS5_VABI __cxa_init_primary_exception_nid_postfix(void* object, std::type_info* type, void (*destructor)(void*)) {
+LibcException::Header* APS5_VABI __cxa_init_primary_exception_nid_postfix(void* object, std::type_info* type, LibcException::GuestDestructor destructor) noexcept {
     using namespace LibcException;
     auto* header = FromObject(object);
     AllocationOf(header)->references.store(0, std::memory_order_relaxed);
     header->type = type;
-    header->destructor = destructor;
+    header->destructor = reinterpret_cast<void (*)(void*)>(destructor);
     header->terminate = terminateHandler.load(std::memory_order_acquire);
     header->adjusted = object;
     header->unwind.exception_class = PrimaryClass;
