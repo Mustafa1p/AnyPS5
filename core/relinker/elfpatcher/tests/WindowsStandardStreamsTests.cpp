@@ -351,7 +351,23 @@ Report RunChild(const std::filesystem::path& executable, const std::string& runt
     const auto captured = readText(capturePath);
     if (fatal) {
         const bool cleanupFailure = mode == "close" || mode == "cleanup-handle" || mode == "cleanup-close" || mode == "cleanup-fclose";
-        Require(result.afterHandles == result.beforeHandles + (cleanupFailure ? 1u : 0u), "repair failure outstanding-handle accounting changed");
+        if (result.afterHandles != result.beforeHandles + (cleanupFailure ? 1u : 0u)) {
+            std::string associations;
+            for (unsigned index = 0; index < 3; ++index)
+                associations += " stream" + std::to_string(index) + "[fd=" + std::to_string(result.beforeFd[index]) + ":" +
+                    std::to_string(result.afterFd[index]) + ",os=" + std::to_string(result.beforeStd[index]) + ":" +
+                    std::to_string(result.afterStd[index]) + ",crt=" + std::to_string(result.beforeCrt[index]) + ":" +
+                    std::to_string(result.afterCrt[index]) + "]";
+            throw std::runtime_error("repair failure outstanding-handle accounting changed: runtime=" + runtime + " mode=" + mode +
+                " outputs=" + std::to_string(outputs) + " before=" + std::to_string(result.beforeHandles) +
+                " expected=" + std::to_string(result.beforeHandles + (cleanupFailure ? 1u : 0u)) +
+                " actual=" + std::to_string(result.afterHandles) + " allocatedFd=" + std::to_string(result.firstAllocatedFd) +
+                " descriptorLive=" + std::to_string(result.temporaryDescriptorLive) + " streamLive=" + std::to_string(result.reopenedStreamLive) +
+                " duplicateClosed=" + std::to_string(result.closedDuplicate) + " borrowedHandlesValid=" + std::to_string(result.originalHandlesValid) +
+                " duplicates=" + std::to_string(result.duplicateCalls) + " CloseHandle=" + std::to_string(result.closeHandleCalls) +
+                " close=" + std::to_string(result.closeCalls) + " fclose=" + std::to_string(result.fcloseCalls) +
+                associations + " witness=" + path.string());
+        }
         Require(result.originalHandlesValid, "repair failure closed a borrowed handle");
         Require((mode == "win-duplicate" || mode == "cleanup-fclose" || !cleanupFailure) ? (mode == "win-duplicate" || result.closedDuplicate) : !result.closedDuplicate,
             "repair failure temporary duplicate liveness changed");
