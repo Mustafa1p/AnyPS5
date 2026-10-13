@@ -282,10 +282,16 @@ int main() {
     std::pair otherArg{&otherTid, &heldOther};
     Require(scePthreadCreate(&otherThread, nullptr, RecordThreadId, &otherArg, nullptr) == SCE_OK);
     while (otherTid.load(std::memory_order_acquire) == 0) std::this_thread::yield();
-    Require(throws([&] { cpuset_getaffinity_nid_postfix(3, 1, otherTid.load(), 8, processSet); }));
-    Require(throws([&] { cpuset_setaffinity_nid_postfix(3, 1, otherTid.load(), 8, processSet); }));
+    Require(cpuset_getaffinity_nid_postfix(3, 1, otherTid.load(), sizeof(processSet), processSet) == 0);
+    Require(processSet[0] == available && processSet[1] == 0 && processSet[2] == 0 && processSet[3] == 0);
+    const std::uint64_t otherMask[4]{first, 0, 0, 0};
+    Require(cpuset_setaffinity_nid_postfix(3, 1, otherTid.load(), sizeof(otherMask), otherMask) == 0);
+    Require(cpuset_getaffinity_nid_postfix(3, 1, otherTid.load(), sizeof(processSet), processSet) == 0);
+    Require(processSet[0] == first && processSet[1] == 0 && processSet[2] == 0 && processSet[3] == 0);
+    Require(ReadCpuset(scePthreadSelf()) == available);
     holdOther.set_value();
     Require(scePthreadJoin(otherThread, nullptr) == SCE_OK);
     Require(cpuset_getaffinity_nid_postfix(3, 1, otherTid.load(), 8, processSet) == -1 && *__error_nid_postfix() == GUEST_ESRCH);
+    Require(processSet[0] == first && processSet[1] == 0 && processSet[2] == 0 && processSet[3] == 0);
     Require(cpuset_setaffinity_nid_postfix(3, 1, otherTid.load(), 8, processSet) == -1 && *__error_nid_postfix() == GUEST_ESRCH);
 }

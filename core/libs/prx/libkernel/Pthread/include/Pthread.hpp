@@ -160,5 +160,7 @@ void SetLiveGuestThreadsAffinity(KernelCpumask mask);
 KernelCpumask LiveGuestThreadsAffinity();
 bool GuestThreadIsLive(const PthreadPrivate* thread);
 bool LiveGuestThreadExists(std::int64_t tid);
+extern "C" bool GuestThreadAffinityById_nid_no_patch(std::int64_t tid, KernelCpumask* mask);
+extern "C" bool SetGuestThreadAffinityById_nid_no_patch(std::int64_t tid, KernelCpumask mask);
 
 #endif
