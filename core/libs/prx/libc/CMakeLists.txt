@@ -69,14 +69,17 @@ if(BUILD_TESTING)
     add_test_executable(guest_allocation_contract_patched_tests ${LIBS_INCLUDE_DIR}/tests/GuestAllocationContract.cpp)
     target_include_directories(guest_allocation_contract_patched_tests PRIVATE ${LIBS_INCLUDE_DIR})
     target_compile_definitions(guest_allocation_contract_patched_tests PRIVATE ANYPS5_PATCHED_ALLOCATION)
-    target_link_libraries(guest_allocation_contract_patched_tests PRIVATE ${CMAKE_DL_LIBS})
+    target_link_libraries(guest_allocation_contract_patched_tests PRIVATE libc ${CMAKE_DL_LIBS})
     configure_windows_unwind(guest_allocation_contract_patched_tests)
     add_dependencies(guest_allocation_contract_patched_tests libs)
     add_test(NAME guest_allocation_contract_patched COMMAND guest_allocation_contract_patched_tests
         ${CMAKE_CURRENT_BINARY_DIR}/../../libs/libc.prx)
     set_tests_properties(guest_allocation_contract_patched PROPERTIES TIMEOUT 30)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        set_tests_properties(guest_allocation_contract_patched PROPERTIES
+            ENVIRONMENT_MODIFICATION "LD_LIBRARY_PATH=path_list_prepend:${CMAKE_CURRENT_BINARY_DIR}/../../libs")
+    endif()
     if(WIN32)
-        target_link_libraries(guest_allocation_contract_patched_tests PRIVATE libc)
         set_tests_properties(guest_allocation_contract PROPERTIES
             ENVIRONMENT_MODIFICATION "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
         set_tests_properties(guest_allocation_contract_patched PROPERTIES

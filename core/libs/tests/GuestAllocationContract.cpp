@@ -265,6 +265,13 @@ int main(int argc, char** argv) {
         Require(length != 0 && length < loadedPath.size(), "could not identify loaded libc path");
         Require(std::filesystem::equivalent(path, std::filesystem::path(loadedPath.data())),
             "host exception runtime loaded libc from a different build");
+#elif defined(__linux__)
+        const auto rawThrow = dlsym(RTLD_DEFAULT, "__cxa_throw");
+        Dl_info exceptionRuntime{};
+        Require(rawThrow != nullptr && dladdr(rawThrow, &exceptionRuntime) != 0 && exceptionRuntime.dli_fname != nullptr,
+            "could not identify the host exception runtime");
+        Require(std::filesystem::equivalent(path, std::filesystem::path(exceptionRuntime.dli_fname)),
+            "host exception runtime loaded libc from a different build");
 #endif
         std::printf("Loaded patched libc: %s\n", path.string().c_str());
         api = {LoadFunction<decltype(api.registerHeap)>(module, "ApplicationHeapRegister_nid_no_patch"),
