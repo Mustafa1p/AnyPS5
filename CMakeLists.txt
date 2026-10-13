@@ -94,10 +94,28 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_check_conventions_comments.py
             FunctionBodyTests PullRequestTemplateTests SilentStubTests QuotedPathTests SpacedPathTests SystemDependencyTests)
         add_test(NAME conventions_silent_stub_sections COMMAND ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_check_conventions_comments.py SilentStubSectionTests)
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_check_conventions_comments.py
+            SilentStubSectionTests.test_component_entry_goes_in_the_component_file
+            SilentStubSectionTests.test_debt_outside_silent_stubs_does_not_exempt_export
+            SilentStubSectionTests.test_different_function_in_same_library_does_not_exempt_export
+            SilentStubSectionTests.test_entry_goes_with_its_first_core_link)
+        add_test(NAME conventions_silent_stub_ownership COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_check_conventions_comments.py
+            SilentStubSectionTests.test_entries_after_silent_stubs_do_not_exempt_export
+            SilentStubSectionTests.test_entry_in_the_index_still_exempts_export
+            SilentStubSectionTests.test_entry_without_a_core_link_stays_in_the_index
+            SilentStubSectionTests.test_file_entry_in_silent_stubs_exempts_export)
+        add_test(NAME conventions_silent_stub_exemptions COMMAND ${Python3_EXECUTABLE}
+            ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_check_conventions_comments.py
+            SilentStubSectionTests.test_library_entry_in_another_library_file_is_rejected
+            SilentStubSectionTests.test_library_entry_in_the_index_is_rejected
+            SilentStubSectionTests.test_named_entry_in_another_library_does_not_exempt_export
+            SilentStubSectionTests.test_named_entry_in_same_library_exempts_export
+            SilentStubSectionTests.test_subsection_in_silent_stubs_keeps_exemption)
         add_test(NAME conventions_repository_checks COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_check_conventions_comments.py RepositoryChecksTests)
-        set_tests_properties(conventions_function_bodies conventions_silent_stub_sections conventions_repository_checks
+        set_tests_properties(conventions_function_bodies conventions_silent_stub_sections conventions_silent_stub_ownership
+            conventions_silent_stub_exemptions conventions_repository_checks
             PROPERTIES TIMEOUT 30)
         add_test(NAME conventions_wrapped_declarations COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/tools/tests/test_check_conventions_wrapped_declarations.py)
