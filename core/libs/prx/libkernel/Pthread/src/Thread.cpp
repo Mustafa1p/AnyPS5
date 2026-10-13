@@ -405,6 +405,18 @@ extern "C" bool SetGuestThreadAffinityById_nid_no_patch(std::int64_t tid, Kernel
     return false;
 }
 
+extern "C" bool SetGuestThreadAffinityByHandle_nid_no_patch(const PthreadPrivate* handle, KernelCpumask mask) {
+    auto& registry = CpuClocks();
+    std::lock_guard lock(registry.lock);
+    for (const auto& [id, thread] : registry.threads) {
+        if (thread == handle && !thread->_finished.load(std::memory_order_acquire)) {
+            thread->affinity.store(mask, std::memory_order_relaxed);
+            return true;
+        }
+    }
+    return false;
+}
+
 bool GuestThreadCpuNanos(int cpuClockThread, std::uint64_t* nanos) {
     auto& registry = CpuClocks();
     std::lock_guard lock(registry.lock);

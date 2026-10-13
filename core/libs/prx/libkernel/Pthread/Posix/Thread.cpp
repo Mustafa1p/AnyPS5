@@ -167,7 +167,8 @@ int APS5_VABI pthread_getaffinity_np_nid_postfix(Pthread thread, std::size_t cpu
 
 int APS5_VABI pthread_setaffinity_np_nid_postfix(Pthread thread, std::size_t cpusetSize, const void* cpuset) {
     constexpr int GuestEdeadlk = 11;
-    if (thread != scePthreadSelf()) {
+    const auto self = scePthreadSelf();
+    if (thread != self) {
         if (!thread) return PosixThread::GUEST_EINVAL;
         if (!GuestThreadIsLive(thread)) return PosixThread::GUEST_ESRCH;
     }
@@ -177,7 +178,8 @@ int APS5_VABI pthread_setaffinity_np_nid_postfix(Pthread thread, std::size_t cpu
     std::memcpy(&requested, cpuset, sizeof(requested));
     const KernelCpumask affinity = requested & sceKernelGetAvailableCpumask();
     if (affinity == 0) return GuestEdeadlk;
-    return PosixThread::ToErrno(scePthreadSetaffinity(thread, affinity));
+    if (thread == self) return PosixThread::ToErrno(scePthreadSetaffinity(thread, affinity));
+    return SetGuestThreadAffinityByHandle_nid_no_patch(thread, affinity) ? 0 : PosixThread::GUEST_ESRCH;
 }
 
 int APS5_VABI pthread_join_nid_postfix(Pthread thread, void** value) {
