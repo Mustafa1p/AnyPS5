@@ -1,6 +1,7 @@
 #include <elfpatcher/windows/WindowsEntryStubBuilder.hpp>
 #include <elfpatcher/windows/WindowsStubEmitter.hpp>
 #include <elfpatcher/windows/WindowsDependencyStubBuilder.hpp>
+#include <elfpatcher/windows/WindowsStandardStreamStubBuilder.hpp>
 #include <elfpatcher/windows/WindowsGuestStartup.hpp>
 #include <io/BufferUtils.hpp>
 #include <algorithm>
@@ -115,6 +116,8 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     const auto functionTable = reserve(12 * 32);
     const auto unwindRva = CheckedRva(dataRva + data.size());
     data.insert(data.end(), {1, 10, 6, 0, 10, 0xb2, 6, 0xc0, 4, 0x70, 3, 0x60, 2, 0x50, 1, 0x30});
+    const auto callbackUnwindRva = CheckedRva(dataRva + data.size());
+    data.insert(data.end(), {1, 4, 1, 0, 4, 0x42, 0, 0});
 
     std::vector<std::uint32_t> libraryPaths;
     std::vector<std::size_t> libraryUnits;
@@ -246,6 +249,9 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     if (dependencyDiagnostics)
         dependencyBuilder.emplace(result.Data);
     std::vector<std::size_t> dependencyCalls;
+    const WindowsStandardStreamStubBuilder standardStreamBuilder(result.Data);
+    std::vector<std::size_t> repairCalls;
+    std::vector<std::size_t> flushCalls;
     result.Code.Rva = AlignRva(dataRva + data.size());
     WindowsStubEmitter code(result.Code.Rva);
 
@@ -421,6 +427,7 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     code.Emit({0x66, 0x41, 0xc7, 0x04, 0x24, 0x00, 0x00});
     logMissingHandle(0xfffffff5u);
     logMissingHandle(0xfffffff4u);
+    repairCalls.push_back(code.Branch({0xe8}));
     code.Rip({0x48, 0x8d, 0x0d}, modulePath);
     call("SetCurrentDirectoryW");
     requireNonzero(directoryError, 0xc000000du);
@@ -586,6 +593,7 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
         guestStartup.WriteImport(code, imports[index], handles);
     }
 
+    repairCalls.push_back(code.Branch({0xe8}));
     guestStartup.Initialize(code, guestModules, handles);
     writeString(enteringElf);
     code.Rip({0x48, 0x8d, 0x0d}, shellLibrary);
@@ -641,6 +649,7 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     code.Rip({0xe8}, entryRva);
     code.Emit({0x89, 0x44, 0x24, 0x58});
     guestStartup.Finalize(code, guestModules, handles, guestFinished);
+    flushCalls.push_back(code.Branch({0xe8}));
     code.Emit({0x8b, 0x44, 0x24, 0x58});
     code.Emit({0x89, 0xc1});
     call("ExitProcess");
@@ -664,8 +673,10 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
     code.PatchBranch(exitCallback, functionEnd);
     code.Emit({0x48, 0x83, 0xec, 0x28});
     guestStartup.Finalize(code, guestModules, handles, guestFinished);
+    flushCalls.push_back(code.Branch({0xe8}));
     code.Emit({0x48, 0x83, 0xc4, 0x28});
     code.Emit({0xc3});
+    const auto callbackEnd = code.GetRva();
     const auto tlsResolver = guestStartup.EmitTlsResolver(code);
     for (const auto offset : tlsResolverAddresses) code.PatchBranch(offset, tlsResolver);
 
@@ -676,23 +687,25 @@ WindowsEntryStub WindowsEntryStubBuilder::Build(const std::uint32_t dataRva, con
         result.LazyStubs.push_back({imports[index].TargetRva, stubRva});
     }
 
-    Io::WriteU32(data, functionTable - dataRva, result.Code.Rva);
-    Io::WriteU32(data, functionTable - dataRva + 4, functionEnd);
-    Io::WriteU32(data, functionTable - dataRva + 8, unwindRva);
-    auto exceptionEntries = CheckedRva(1);
+    std::vector<std::array<std::uint32_t, 3>> exceptionFunctions = {
+        {result.Code.Rva, functionEnd, unwindRva}, {functionEnd, callbackEnd, callbackUnwindRva}
+    };
+    const auto standardStreams = standardStreamBuilder.Build(code, nativeImports);
+    for (const auto offset : repairCalls) code.PatchBranch(offset, standardStreams.RepairRva);
+    for (const auto offset : flushCalls) code.PatchBranch(offset, standardStreams.FlushRva);
+    exceptionFunctions.insert(exceptionFunctions.end(), standardStreams.Functions.begin(), standardStreams.Functions.end());
     if (dependencyBuilder.has_value()) {
         const auto dependency = dependencyBuilder->Build(code, nativeImports);
         for (const auto offset : dependencyCalls)
             code.PatchBranch(offset, dependency.EntryRva);
-        if (dependency.Functions.size() >= 32)
-            throw Domain::RelinkerException("Too many dependency diagnostic routines");
-        for (std::size_t index = 0; index < dependency.Functions.size(); ++index) {
-            for (std::size_t field = 0; field < 3; ++field)
-                Io::WriteU32(data, functionTable - dataRva + (index + 1) * 12 + field * 4, dependency.Functions[index][field]);
-        }
-        exceptionEntries = CheckedRva(dependency.Functions.size() + 1);
+        exceptionFunctions.insert(exceptionFunctions.end(), dependency.Functions.begin(), dependency.Functions.end());
     }
-    result.ExceptionDirectory = {functionTable, CheckedRva(exceptionEntries * 12)};
+    if (exceptionFunctions.size() > 32)
+        throw Domain::RelinkerException("Too many Windows startup routines");
+    for (std::size_t index = 0; index < exceptionFunctions.size(); ++index)
+        for (std::size_t field = 0; field < 3; ++field)
+            Io::WriteU32(data, functionTable - dataRva + index * 12 + field * 4, exceptionFunctions[index][field]);
+    result.ExceptionDirectory = {functionTable, CheckedRva(exceptionFunctions.size() * 12)};
     result.Code.Data = code.TakeBytes();
     return result;
 }

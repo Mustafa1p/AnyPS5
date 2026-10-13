@@ -17,6 +17,7 @@ add_library(relinker_core STATIC
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsRelocationBuilder.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsImportBuilder.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsEntryStubBuilder.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsStandardStreamStubBuilder.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsDependencyStubBuilder.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsStubEmitter.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsPeWriter.cpp
@@ -123,6 +124,13 @@ if(WIN32)
 endif()
 
 if(WIN32)
+    if(BUILD_TESTING)
+        add_test_executable(windows_standard_streams_tests ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/tests/WindowsStandardStreamsTests.cpp)
+        target_link_libraries(windows_standard_streams_tests PRIVATE relinker_core)
+        set_target_properties(windows_standard_streams_tests PROPERTIES WIN32_EXECUTABLE TRUE)
+        add_test(NAME windows_standard_streams COMMAND windows_standard_streams_tests)
+        set_tests_properties(windows_standard_streams PROPERTIES TIMEOUT 30)
+    endif()
     add_test_executable(windows_dependency_diagnostics_tests EXCLUDE_FROM_ALL
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/tests/WindowsDependencyDiagnosticsTests.cpp
         ${CMAKE_CURRENT_SOURCE_DIR}/elfpatcher/src/windows/WindowsDependencyStubBuilder.cpp
@@ -497,6 +505,12 @@ if(BUILD_TESTING)
             ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_guest_needed_nested_modules.py $<TARGET_FILE:relinker>)
         set(windows_stdio_host_arguments)
         if(WIN32)
+            add_library(windows_stdio_unwind_host SHARED elfpatcher/tests/WindowsStdioUnwindHost.cpp)
+            set_target_properties(windows_stdio_unwind_host PROPERTIES PREFIX "" WINDOWS_EXPORT_ALL_SYMBOLS ON)
+            add_test(NAME windows_stdio_unwind COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/relinker/tests/test_windows_stdio_unwind.py
+                $<TARGET_FILE:relinker> $<TARGET_FILE:windows_stdio_unwind_host>)
+            set_tests_properties(windows_stdio_unwind PROPERTIES TIMEOUT 30)
             if(MINGW)
                 add_library(windows_stdio_host_ucrt SHARED elfpatcher/tests/WindowsStdioHost.cpp)
                 target_compile_options(windows_stdio_host_ucrt PRIVATE -mcrtdll=ucrt)

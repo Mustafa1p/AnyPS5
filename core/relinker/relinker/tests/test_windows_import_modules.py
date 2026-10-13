@@ -209,7 +209,8 @@ def executable(owner, symbol='shared#A#B', module_name=None, extra_dependencies=
     struct.pack_into('<IIIII', image, 0x4840, 1, 2, 1, 0, 0)
     struct.pack_into('<IBBHQQ', image, 0x4898, 1, 0x12, 0, 0, 0, 0)
     struct.pack_into('<QQq', image, 0x4900, 0x4a20, (1 << 32) | 6, 0)
-    image[0x4000:0x4007] = b'\xff\x15' + struct.pack('<i', 0x4a20 - 0x4006) + b'\xc3'
+    code = bytes.fromhex('4883ec28ff15') + struct.pack('<i', 0x4a20 - 0x400a) + bytes.fromhex('4883c428c3')
+    image[0x4000:0x4000 + len(code)] = code
     return image
 
 
