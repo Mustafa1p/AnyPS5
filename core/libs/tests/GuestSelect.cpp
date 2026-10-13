@@ -9,6 +9,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #ifdef _WIN32
 #include <windows.h>
 #include <io.h>
@@ -131,6 +132,67 @@ public:
         return old;
     }
 };
+
+#ifdef _WIN32
+class Pipe {
+public:
+    int fds[2];
+    Pipe() { Require(_pipe(fds,4096,_O_BINARY)==0,"native CRT pipe creation"); Require(fds[0]>=0 && fds[0]<32 && fds[1]>=0,"pipe fd namespace bound"); }
+    ~Pipe() { for (int fd:fds) if(fd>=0) _close(fd); }
+    void CloseWriter() { Require(_close(fds[1])==0,"close final writer"); fds[1]=-1; }
+};
+void CheckPipes(Select select) {
+    Pipe pipe;
+    auto poll=[&](long microseconds,bool nullTimeout=false) {
+        Set read;read.Add(pipe.fds[0]);const auto expected=read;
+        Timeout timeout{0xd184c95632af708b,{0,microseconds},0x925b30e7a6d148fc};const auto original=timeout;
+        const int result=select(pipe.fds[0]+1,read.bits.data(),nullptr,nullptr,nullTimeout?nullptr:&timeout.value);
+        Require(timeout==original,"pipe poll changed guarded timeout");
+        if(result==1) Require(read==expected,"ready pipe changed bitmap/guards");
+        else {Require(result==0,"pipe read select unexpected result"); Set empty;Require(read==empty,"idle pipe changed bitmap/guards");}
+        return result;
+    };
+    Require(poll(0)==0,"empty open pipe readiness");
+    FILETIME creation,termination,kernelBefore,userBefore,kernelAfter,userAfter;
+    Require(GetThreadTimes(GetCurrentThread(),&creation,&termination,&kernelBefore,&userBefore)!=0,"thread CPU clock before idle");
+    const auto start=std::chrono::steady_clock::now();
+    Require(poll(100000)==0,"idle pipe must wait to deadline");
+    const auto elapsed=std::chrono::steady_clock::now()-start;
+    Require(GetThreadTimes(GetCurrentThread(),&creation,&termination,&kernelAfter,&userAfter)!=0,"thread CPU clock after idle");
+    auto ticks=[](FILETIME value) {return (std::uint64_t(value.dwHighDateTime)<<32)|value.dwLowDateTime;};
+    const auto cpu=ticks(kernelAfter)+ticks(userAfter)-ticks(kernelBefore)-ticks(userBefore);
+    std::printf("Pipe idle wall_ms=%lld cpu_ms=%llu\n",static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed).count()),static_cast<unsigned long long>(cpu/10000));
+    Require(elapsed>=std::chrono::milliseconds(80) && elapsed<std::chrono::seconds(2),"idle pipe deadline duration");
+    Require(cpu<750000,"idle pipe should not busy-spin for timeout");
+    const std::array<unsigned char,4> payload{0x10,0x7f,0x00,0xff};
+    Require(_write(pipe.fds[1],payload.data(),payload.size())==4,"queue binary bytes");
+    Require(poll(0)==1 && poll(0)==1,"queued repeated pipe readiness");
+    std::array<unsigned char,6> result{0xaa,0xaa,0xaa,0xaa,0xaa,0xaa};
+    Require(_read(pipe.fds[0],result.data()+1,2)==2 && result[1]==0x10 && result[2]==0x7f && result[0]==0xaa && result[3]==0xaa,"read after peek preserves order and guards");
+    Require(poll(0)==1,"partial pipe remains readable");
+    pipe.CloseWriter();
+    Require(poll(0)==1,"queued data after writer close readable");
+    Require(_read(pipe.fds[0],result.data()+3,2)==2 && result[3]==0 && result[4]==0xff && result[5]==0xaa,"queued closed-writer data preserved");
+    Require(poll(0)==1,"drained final-writer close EOF readable");
+    const auto retained=result;
+    Require(_read(pipe.fds[0],result.data()+1,4)==0 && result==retained,"EOF read0 preserves buffer");
+
+    Pipe delayed;
+    std::jthread writer([&] {std::this_thread::sleep_for(std::chrono::milliseconds(50)); Require(_write(delayed.fds[1],payload.data(),4)==4,"delayed write");});
+    Set read;read.Add(delayed.fds[0]);const auto expected=read;Timeval limit{0,500000};
+    const auto arrival=std::chrono::steady_clock::now();
+    Require(select(delayed.fds[0]+1,read.bits.data(),nullptr,nullptr,&limit)==1 && read==expected,"delayed pipe arrival before finite deadline");
+    Require(std::chrono::steady_clock::now()-arrival>=std::chrono::milliseconds(30),"delayed readiness cannot precede queued data");
+    writer.join();Require(_read(delayed.fds[0],result.data()+1,4)==4,"delayed payload read");
+    Require(std::equal(payload.begin(),payload.end(),result.begin()+1),"delayed actual payload preserved");
+    DiskFile regular(91); Set mixed;mixed.Add(delayed.fds[0]);mixed.Add(regular.Fd());Set expectedMixed;expectedMixed.Add(regular.Fd());Timeval zero{0,0};
+    Require(select(std::max(delayed.fds[0],regular.Fd())+1,mixed.bits.data(),nullptr,nullptr,&zero)==1 && mixed==expectedMixed,"empty pipe and regular file mixed readiness");
+    regular.Check(3);
+    Require(_write(delayed.fds[1],payload.data(),4)==4,"queue mixed pipe");mixed.Add(delayed.fds[0]);expectedMixed.Add(delayed.fds[0]);
+    Require(select(std::max(delayed.fds[0],regular.Fd())+1,mixed.bits.data(),nullptr,nullptr,&zero)==2 && mixed==expectedMixed,"queued pipe and regular file both ready");
+    regular.Check(3);Require(_read(delayed.fds[0],result.data()+1,4)==4 && std::equal(payload.begin(),payload.end(),result.begin()+1),"mixed readiness preserves binary pipe data");
+}
+#endif
 
 void CheckValidation(Select select) {
     Set read, write, except;
@@ -285,6 +347,10 @@ int main(int argc, char** argv) {
         static_cast<void>(argc);
         static_cast<void>(argv);
         const Select select = select_nid_postfix;
+#endif
+#ifdef _WIN32
+        CheckPipes(select);
+        std::puts("Guest select CRT anonymous-pipe bounded read contract passed");
 #endif
         CheckValidation(select);
         std::puts("Guest select validation and timed wait passed");

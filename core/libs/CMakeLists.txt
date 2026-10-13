@@ -149,6 +149,10 @@ if(BUILD_TESTING)
             $<TARGET_FILE:relinker> ${PATCHED_DIR})
         set_tests_properties(converted_select_contract PROPERTIES TIMEOUT 30)
         if(WIN32)
+            add_test(NAME converted_pipe_select_contract COMMAND ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converted_pipe_select_contract.py
+                $<TARGET_FILE:relinker> ${PATCHED_DIR})
+            set_tests_properties(converted_pipe_select_contract PROPERTIES TIMEOUT 30)
             add_test(NAME converted_wide_contract COMMAND ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_converted_wide_contract.py
                 $<TARGET_FILE:relinker> ${PATCHED_DIR})

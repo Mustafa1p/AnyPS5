@@ -2,6 +2,7 @@
 #include "SceTypes.hpp"
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -10,7 +11,9 @@
 #include <stdexcept>
 #include <thread>
 #ifdef _WIN32
+#include <windows.h>
 #include <io.h>
+#include <fcntl.h>
 #else
 #include <unistd.h>
 #endif
@@ -167,6 +170,77 @@ static void CheckMixedSelect(int receiver, int sender, const std::array<std::uin
     Require(MixedSeek(descriptor, 5, SEEK_SET) == 5);
     Require(std::fclose(file) == 0);
 }
+
+#ifdef _WIN32
+static void CheckPipeSelect(int receiver, int sender, const std::array<std::uint8_t, 16>& address) {
+    struct Pipe {
+        int descriptors[2];
+        Pipe() { Require(_pipe(descriptors, 4096, _O_BINARY) == 0); }
+        ~Pipe() { for (const int descriptor : descriptors) _close(descriptor); }
+    } pipe;
+    const int descriptor = pipe.descriptors[0];
+    Require(descriptor >= 0 && descriptor < 32 && receiver >= 32 && receiver < 1024);
+    struct GuardedSet {
+        std::uint64_t before = 0x21394be8657acf01;
+        std::array<std::uint64_t, 16> bits{};
+        std::uint64_t after = 0xd1b342968af05ec7;
+        void Add(int fd) { bits[fd / 64] |= std::uint64_t{1} << (fd % 64); }
+        bool operator==(const GuardedSet&) const = default;
+    } readable;
+    const GuardedSet empty;
+    readable.Add(descriptor);
+    const std::array<std::int64_t, 2> timeout{0, 100000};
+    auto limit = timeout;
+    FILETIME creation, termination, kernelBefore, userBefore, kernelAfter, userAfter;
+    Require(GetThreadTimes(GetCurrentThread(), &creation, &termination, &kernelBefore, &userBefore) != 0);
+    const auto start = std::chrono::steady_clock::now();
+    Require(select_nid_postfix(descriptor + 1, readable.bits.data(), nullptr, nullptr, limit.data()) == 0);
+    const auto elapsed = std::chrono::steady_clock::now() - start;
+    Require(GetThreadTimes(GetCurrentThread(), &creation, &termination, &kernelAfter, &userAfter) != 0);
+    const auto ticks = [](FILETIME value) { return (std::uint64_t(value.dwHighDateTime) << 32) | value.dwLowDateTime; };
+    Require(ticks(kernelAfter) + ticks(userAfter) - ticks(kernelBefore) - ticks(userBefore) < 750000);
+    Require(elapsed >= std::chrono::milliseconds(80) && elapsed < std::chrono::seconds(2));
+    Require(readable == empty && limit == timeout);
+
+    const std::array<unsigned char, 4> payload{0x10, 0x7f, 0, 0xff};
+    std::atomic<int> written{-1};
+    std::jthread writer([&] {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        written.store(_write(pipe.descriptors[1], payload.data(), payload.size()));
+    });
+    readable.Add(descriptor);
+    readable.Add(receiver);
+    auto onlyPipe = empty;
+    onlyPipe.Add(descriptor);
+    const std::array<std::int64_t, 2> wait{0, 500000};
+    limit = wait;
+    const int ready = select_nid_postfix(receiver + 1, readable.bits.data(), nullptr, nullptr, limit.data());
+    writer.join();
+    Require(written.load() == 4 && ready == 1 && readable == onlyPipe && limit == wait);
+    std::array<unsigned char, 6> received{0xaa, 0xaa, 0xaa, 0xaa, 0xaa, 0xaa};
+    Require(_read(descriptor, received.data() + 1, payload.size()) == 4);
+    Require(std::equal(payload.begin(), payload.end(), received.begin() + 1) && received.front() == 0xaa && received.back() == 0xaa);
+
+    const char datagram[] = "independent mixed pipe and UDP";
+    Require(_write(pipe.descriptors[1], payload.data(), payload.size()) == 4);
+    Require(sceNetSendto(sender, datagram, sizeof(datagram), 0, address.data(), address.size()) == sizeof(datagram));
+    auto socketReady = empty;
+    socketReady.Add(receiver);
+    limit = wait;
+    Require(select_nid_postfix(receiver + 1, socketReady.bits.data(), nullptr, nullptr, limit.data()) == 1);
+    readable = onlyPipe;
+    readable.Add(receiver);
+    const auto both = readable;
+    limit = wait;
+    Require(select_nid_postfix(receiver + 1, readable.bits.data(), nullptr, nullptr, limit.data()) == 2);
+    Require(readable == both && limit == wait);
+    Require(_read(descriptor, received.data() + 1, payload.size()) == 4);
+    Require(std::equal(payload.begin(), payload.end(), received.begin() + 1));
+    std::array<char, sizeof(datagram)> receivedDatagram{};
+    Require(sceNetRecvfrom(receiver, receivedDatagram.data(), receivedDatagram.size(), 0, nullptr, nullptr) == sizeof(datagram));
+    Require(std::memcmp(datagram, receivedDatagram.data(), sizeof(datagram)) == 0);
+}
+#endif
 
 static void CheckPoolStats() {
     const int pool = sceNetPoolCreate("stats", 0x4000, 0);
@@ -398,6 +472,9 @@ int main() {
     Require(select_nid_postfix(udp_receiver + 1, readable, nullptr, nullptr, bad_timeout) == -1 && *__error_nid_postfix() == 22);
     Require(select_nid_postfix(1025, nullptr, nullptr, nullptr, poll_now) == -1 && *__error_nid_postfix() == 22);
     CheckMixedSelect(udp_receiver, udp_sender, address);
+#ifdef _WIN32
+    CheckPipeSelect(udp_receiver, udp_sender, address);
+#endif
     CheckMessages(udp_receiver, udp_sender, address);
     Require(sceNetSocketClose(udp_sender) == 0);
     Require(sceNetSocketClose(udp_receiver) == 0);
