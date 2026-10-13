@@ -259,6 +259,18 @@ if(BUILD_TESTING)
     if(WIN32)
         set_tests_properties(guest_libc_threads PROPERTIES ENVIRONMENT_MODIFICATION
             "PATH=path_list_prepend:$<TARGET_FILE_DIR:libc>")
+        find_package(Python3 QUIET COMPONENTS Interpreter)
+        if(Python3_Interpreter_FOUND)
+            add_test_executable(guest_condition_lifecycle_tests ${LIBS_INCLUDE_DIR}/tests/GuestConditionLifecycle.cpp)
+            target_include_directories(guest_condition_lifecycle_tests PRIVATE ${LIBS_INCLUDE_DIR})
+            target_link_libraries(guest_condition_lifecycle_tests PRIVATE libc)
+            configure_windows_unwind(guest_condition_lifecycle_tests)
+            add_dependencies(guest_condition_lifecycle_tests libs)
+            add_test(NAME guest_condition_lifecycle_patched COMMAND ${Python3_EXECUTABLE}
+                ${LIBS_INCLUDE_DIR}/tests/test_native_condition_lifecycle.py
+                $<TARGET_FILE:guest_condition_lifecycle_tests> ${CMAKE_CURRENT_BINARY_DIR}/../../libs)
+            set_tests_properties(guest_condition_lifecycle_patched PROPERTIES TIMEOUT 30)
+        endif()
     endif()
     add_test_executable(guest_libc_static_imports_tests ${LIBS_INCLUDE_DIR}/tests/GuestLibcStaticImports.cpp)
     target_include_directories(guest_libc_static_imports_tests PRIVATE ${LIBS_INCLUDE_DIR})
