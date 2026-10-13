@@ -49,6 +49,12 @@ struct Report {
     unsigned temporaryDescriptorLive;
     unsigned reopenedStreamLive;
     unsigned inputCrtQueried;
+    std::uintptr_t cleanupStreamHandle;
+    unsigned cleanupStreamClosed;
+    int cleanupResult;
+    unsigned omittedGetterMask;
+    DWORD beforeSnapshotHandles;
+    int cleanupDescriptor;
     std::array<unsigned char, 32> suffix;
 };
 
@@ -59,6 +65,7 @@ std::string fault;
 std::filesystem::path witness;
 HANDLE ownedDuplicate = nullptr;
 bool unassociatedInput = false;
+void* closedOutput = nullptr;
 
 void Require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
@@ -78,7 +85,10 @@ void* Stream(unsigned index) {
 void Snapshot(bool before) {
     const std::array<DWORD, 3> ids = {STD_INPUT_HANDLE, STD_OUTPUT_HANDLE, STD_ERROR_HANDLE};
     for (unsigned index = 0; index < 3; ++index) {
-        const int descriptor = Function<Fileno>("_fileno")(Stream(index));
+        const auto stream = Stream(index);
+        const bool closed = !before && stream == closedOutput;
+        const int descriptor = closed ? -1 : Function<Fileno>("_fileno")(stream);
+        if (closed) report.omittedGetterMask |= 1u << index;
         (before ? report.beforeFd : report.afterFd)[index] = descriptor;
         (before ? report.beforeStd : report.afterStd)[index] = reinterpret_cast<std::uintptr_t>(GetStdHandle(ids[index]));
         (before ? report.beforeCrt : report.afterCrt)[index] = descriptor >= 0 && !(unassociatedInput && index == 0) ? Function<OsHandle>("_get_osfhandle")(descriptor) : -1;
@@ -97,7 +107,7 @@ void WriteReport() {
 BOOL WINAPI DuplicateProbe(HANDLE sourceProcess, HANDLE source, HANDLE destinationProcess, LPHANDLE destination,
                             DWORD access, BOOL inherit, DWORD options) {
     if (targetActive && !fault.empty() && report.duplicateCalls == 0)
-        GetProcessHandleCount(GetCurrentProcess(), &report.beforeHandles);
+        Require(GetProcessHandleCount(GetCurrentProcess(), &report.beforeHandles), "cannot read handle count before duplicate control");
     if (targetActive && fault == "win-duplicate") {
         ++report.duplicateCalls;
         report.expectedError = ERROR_ACCESS_DENIED;
@@ -127,7 +137,10 @@ int OpenProbe(std::intptr_t handle, int flags) {
 
 void* ReopenProbe(const char* path, const char* mode, void* stream) {
     const auto result = Function<Reopen>("freopen")(fault == "reopen" || fault == "cleanup-close" ? "?:\\stdio-repair-invalid" : path, mode, stream);
-    if (!result) report.expectedError = static_cast<unsigned>(*Function<Error>("_errno")());
+    if (!result) {
+        report.expectedError = static_cast<unsigned>(*Function<Error>("_errno")());
+        closedOutput = stream;
+    }
     return result;
 }
 
@@ -148,8 +161,21 @@ int CloseProbe(int descriptor) {
 
 int FcloseProbe(void* stream) {
     ++report.fcloseCalls;
-    if (fault == "cleanup-fclose") { *Function<Error>("_errno")() = 13; return -1; }
-    return Function<FileAction>("fclose")(stream);
+    const auto descriptor = Function<Fileno>("_fileno")(stream);
+    report.cleanupDescriptor = descriptor;
+    Require(descriptor >= 0, "cleanup stream has no valid owned descriptor before fclose");
+    const auto handle = Function<OsHandle>("_get_osfhandle")(descriptor);
+    DWORD flags = 0;
+    Require(GetHandleInformation(reinterpret_cast<HANDLE>(handle), &flags), "cleanup stream has no valid owned native handle before fclose");
+    report.cleanupStreamHandle = static_cast<std::uintptr_t>(handle);
+    if (fault == "cleanup-fclose") {
+        *Function<Error>("_errno")() = 13;
+        report.cleanupResult = -1;
+        return -1;
+    }
+    report.cleanupResult = Function<FileAction>("fclose")(stream);
+    if (report.cleanupResult == 0) closedOutput = stream;
+    return report.cleanupResult;
 }
 
 int FlushProbe(void* stream) {
@@ -172,8 +198,9 @@ FARPROC WINAPI AddressProbe(HMODULE module, LPCSTR name) {
 }
 
 void WINAPI FailureProbe(DWORD status, DWORD, DWORD, const ULONG_PTR*) {
+    Require(GetProcessHandleCount(GetCurrentProcess(), &report.beforeSnapshotHandles), "cannot read handle count before failure snapshot");
     Snapshot(false);
-    GetProcessHandleCount(GetCurrentProcess(), &report.afterHandles);
+    Require(GetProcessHandleCount(GetCurrentProcess(), &report.afterHandles), "cannot read handle count after failure snapshot");
     DWORD flags = 0;
     report.closedDuplicate = ownedDuplicate && !GetHandleInformation(ownedDuplicate, &flags);
     report.originalHandlesValid = GetHandleInformation(reinterpret_cast<HANDLE>(report.beforeStd[1]), &flags) &&
@@ -182,6 +209,9 @@ void WINAPI FailureProbe(DWORD status, DWORD, DWORD, const ULONG_PTR*) {
         report.originalHandlesValid &= GetHandleInformation(reinterpret_cast<HANDLE>(report.beforeStd[0]), &flags);
     report.temporaryDescriptorLive = 0;
     report.reopenedStreamLive = 0;
+    report.cleanupStreamClosed = 0;
+    if (report.cleanupStreamHandle)
+        report.cleanupStreamClosed = !GetHandleInformation(reinterpret_cast<HANDLE>(report.cleanupStreamHandle), &flags) && GetLastError() == ERROR_INVALID_HANDLE;
     if ((fault == "close" || fault == "cleanup-close") && report.firstAllocatedFd >= 0) {
         const auto handle = Function<OsHandle>("_get_osfhandle")(report.firstAllocatedFd);
         report.temporaryDescriptorLive = GetHandleInformation(reinterpret_cast<HANDLE>(handle), &flags);
@@ -259,6 +289,10 @@ int Child(const std::string& runtime, const std::string& mode, const std::filesy
     fault = mode == "normal" || mode == "stdin" || mode == "slot0" ? "" : mode;
     unassociatedInput = mode == "slot0";
     report.inputCrtQueried = !unassociatedInput;
+    report.cleanupStreamHandle = 0;
+    report.cleanupStreamClosed = report.omittedGetterMask = report.beforeSnapshotHandles = 0;
+    report.cleanupResult = -999;
+    report.cleanupDescriptor = -1;
     targetModule = LoadLibraryA(runtime == "ucrt" ? "ucrtbase.dll" : "msvcrt.dll");
     Require(targetModule != nullptr, "cannot load known CRT test module");
     if (unassociatedInput) {
@@ -351,7 +385,8 @@ Report RunChild(const std::filesystem::path& executable, const std::string& runt
     const auto captured = readText(capturePath);
     if (fatal) {
         const bool cleanupFailure = mode == "close" || mode == "cleanup-handle" || mode == "cleanup-close" || mode == "cleanup-fclose";
-        if (result.afterHandles != result.beforeHandles + (cleanupFailure ? 1u : 0u)) {
+        if (result.afterHandles != result.beforeHandles + (cleanupFailure ? 1u : 0u) ||
+            result.beforeSnapshotHandles != result.beforeHandles + (cleanupFailure ? 1u : 0u)) {
             std::string associations;
             for (unsigned index = 0; index < 3; ++index)
                 associations += " stream" + std::to_string(index) + "[fd=" + std::to_string(result.beforeFd[index]) + ":" +
@@ -362,6 +397,10 @@ Report RunChild(const std::filesystem::path& executable, const std::string& runt
                 " outputs=" + std::to_string(outputs) + " before=" + std::to_string(result.beforeHandles) +
                 " expected=" + std::to_string(result.beforeHandles + (cleanupFailure ? 1u : 0u)) +
                 " actual=" + std::to_string(result.afterHandles) + " allocatedFd=" + std::to_string(result.firstAllocatedFd) +
+                " beforeSnapshot=" + std::to_string(result.beforeSnapshotHandles) + " omittedGetterMask=" + std::to_string(result.omittedGetterMask) +
+                " cleanupStreamHandle=" + std::to_string(result.cleanupStreamHandle) + " cleanupStreamClosed=" + std::to_string(result.cleanupStreamClosed) +
+                " fcloseResult=" + std::to_string(result.cleanupResult) +
+                " cleanupDescriptor=" + std::to_string(result.cleanupDescriptor) +
                 " descriptorLive=" + std::to_string(result.temporaryDescriptorLive) + " streamLive=" + std::to_string(result.reopenedStreamLive) +
                 " duplicateClosed=" + std::to_string(result.closedDuplicate) + " borrowedHandlesValid=" + std::to_string(result.originalHandlesValid) +
                 " duplicates=" + std::to_string(result.duplicateCalls) + " CloseHandle=" + std::to_string(result.closeHandleCalls) +
@@ -377,6 +416,11 @@ Report RunChild(const std::filesystem::path& executable, const std::string& runt
         Require(result.fcloseCalls == (mode == "duplicate" || mode == "close" || mode == "cleanup-fclose" ? 1u : 0u), "failure cleanup missed reopened NUL stream");
         Require(result.temporaryDescriptorLive == (mode == "close" || mode == "cleanup-close" ? 1u : 0u), "temporary descriptor liveness was not reported accurately");
         Require(result.reopenedStreamLive == (mode == "cleanup-fclose" ? 1u : 0u), "reopened stream liveness was not reported accurately");
+        if (result.fcloseCalls)
+            Require(result.cleanupDescriptor >= 0 && result.cleanupStreamHandle && result.cleanupResult == (mode == "cleanup-fclose" ? -1 : 0) &&
+                result.cleanupStreamClosed == (mode == "cleanup-fclose" ? 0u : 1u), "cleanup stream native handle ownership changed");
+        Require(result.omittedGetterMask == (mode == "reopen" || mode == "cleanup-close" || mode == "duplicate" || mode == "close" ? 2u : 0u),
+            "failure snapshot queried a closed output FILE or omitted a live one");
         const std::string stage = mode == "open" || mode == "cleanup-handle" ? "_open_osfhandle" : mode == "reopen" || mode == "cleanup-close" ? "freopen" :
             mode == "duplicate" || mode == "cleanup-fclose" ? "_dup2" : mode == "close" ? "_close" : "DuplicateHandle";
         const auto diagnostic = stage + ": " + (mode == "win-duplicate" ? "Win32 error " : "CRT errno ") + std::to_string(result.expectedError);
