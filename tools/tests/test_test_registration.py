@@ -1,4 +1,6 @@
 from pathlib import Path
+from collections import Counter
+import importlib.util
 import os
 import shutil
 import sys
@@ -12,6 +14,35 @@ import check_test_registration
 
 
 class RegistrationTests(unittest.TestCase):
+    def test_convention_partitions_cover_every_original_case_once(self):
+        source = Path(__file__).resolve().with_name("test_check_conventions_comments.py")
+        spec = importlib.util.spec_from_file_location("convention_partition_cases", source)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        loader = unittest.TestLoader()
+
+        def identifiers(suite):
+            for item in suite:
+                if isinstance(item, unittest.TestSuite):
+                    yield from identifiers(item)
+                else:
+                    yield item.id()
+
+        expected = Counter(identifiers(loader.loadTestsFromModule(module)))
+        selected = Counter()
+        cmake = source.parents[2] / "CMakeLists.txt"
+        for command, arguments in check_test_registration.commands(cmake.read_text(encoding="utf-8")):
+            if command != "add_test":
+                continue
+            for index, argument in enumerate(arguments):
+                if argument.endswith("/" + source.name):
+                    selectors = arguments[index + 1:]
+                    suites = [loader.loadTestsFromName(name, module) for name in selectors] if selectors else [loader.loadTestsFromModule(module)]
+                    for suite in suites:
+                        selected.update(identifiers(suite))
+        self.assertTrue(expected)
+        self.assertEqual(selected, expected)
+
     def registered(self, content):
         with tempfile.TemporaryDirectory() as directory:
             build = Path(directory)
