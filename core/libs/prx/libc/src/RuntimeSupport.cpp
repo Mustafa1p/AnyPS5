@@ -16,6 +16,7 @@
 #endif
 
 #include "prx/libc/include/General.hpp"
+#include "prx/libc/include/Shutdown.hpp"
 #include "prx/libc/include/SonyCrt.hpp"
 #include "prx/libc/include/specifics/gcc/AtomicOps.hpp"
 #include "prx/libc/include/FileStream.hpp"
@@ -62,7 +63,9 @@ int APS5_VABI __cxa_atexit_nid_postfix(void (APS5_VABI *func)(void*), void* arg,
     g_exitDestructors.push_back({func, arg, dsoHandle});
     if (!g_exitRunnerRegistered) {
         g_exitRunnerRegistered = true;
-        std::atexit([] { CxaFinalize_nid_no_patch(nullptr); });
+        std::atexit([] {
+            if (LibcAutomaticFinalizationAllowed_nid_no_patch()) CxaFinalize_nid_no_patch(nullptr);
+        });
     }
     return 0;
 }

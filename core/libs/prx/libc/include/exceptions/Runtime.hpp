@@ -9,6 +9,7 @@
 #include "prx/libc/include/specifics/itanium/CxxAbi.hpp"
 
 namespace LibcException {
+using GuestDestructor = void (APS5_VABI *)(void*);
 struct Header {
     std::type_info* type {};
     void (*destructor)(void*) {};

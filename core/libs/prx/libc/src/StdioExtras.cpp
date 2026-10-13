@@ -71,11 +71,11 @@ const char* APS5_VABI setlocale_nid_postfix(int category, const char* locale) {
     return nullptr;
 }
 
-GuestNewHandler APS5_VABI _ZSt15set_new_handlerPFvvE_nid_postfix(GuestNewHandler handler) {
+GuestNewHandler APS5_VABI _ZSt15set_new_handlerPFvvE_nid_postfix(GuestNewHandler handler) noexcept {
     return g_newHandler.exchange(handler);
 }
 
-GuestNewHandler APS5_VABI _ZSt15get_new_handlerv_nid_postfix() {
+GuestNewHandler APS5_VABI _ZSt15get_new_handlerv_nid_postfix() noexcept {
     return g_newHandler.load();
 }
 
@@ -92,7 +92,7 @@ void* APS5_VABI _Znam_nid_postfix(std::size_t size) {
 void* APS5_VABI _ZnwmRKSt9nothrow_t_nid_postfix(std::size_t size, const void*) noexcept {
     try {
         return Allocate(size);
-    } catch (const std::bad_alloc&) {
+    } catch (...) {
         return nullptr;
     }
 }
@@ -100,7 +100,7 @@ void* APS5_VABI _ZnwmRKSt9nothrow_t_nid_postfix(std::size_t size, const void*) n
 void* APS5_VABI _ZnamRKSt9nothrow_t_nid_postfix(std::size_t size, const void*) noexcept {
     try {
         return Allocate(size);
-    } catch (const std::bad_alloc&) {
+    } catch (...) {
         return nullptr;
     }
 }

@@ -15,7 +15,11 @@
 #include <string>
 #include <vector>
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <windows.h>
+#include <io.h>
+extern "C" _invalid_parameter_handler _set_thread_local_invalid_parameter_handler(_invalid_parameter_handler);
+#else
 #include <poll.h>
 #endif
 
@@ -57,7 +61,66 @@ int KernelSockets(KernelSocketPoll::Entry* entries, int count, int timeoutMillis
     return GuestSockets::Poll(entries, count, timeoutMilliseconds);
 }
 
-#ifndef _WIN32
+#ifdef _WIN32
+
+enum class DescriptorKind { RegularFile, PipeReadable, PipePending, PipeUnsupported, Other, Invalid, Failed };
+
+void IgnoreInvalidParameter(const wchar_t*, const wchar_t*, const wchar_t*, unsigned int, std::uintptr_t) {}
+
+DescriptorKind InspectDescriptor(int descriptor, short events) {
+    const auto previous = _set_thread_local_invalid_parameter_handler(IgnoreInvalidParameter);
+    const auto native = ::_get_osfhandle(descriptor);
+    _set_thread_local_invalid_parameter_handler(previous);
+    if (native == -1 || native == -2) return DescriptorKind::Invalid;
+    const auto handle = reinterpret_cast<HANDLE>(native);
+    ::SetLastError(ERROR_SUCCESS);
+    const auto type = ::GetFileType(handle);
+    if (type == FILE_TYPE_UNKNOWN && ::GetLastError() == ERROR_INVALID_HANDLE) return DescriptorKind::Invalid;
+    if (type == FILE_TYPE_PIPE) {
+        if (events != KernelSocketPoll::Readable) return DescriptorKind::PipeUnsupported;
+        DWORD flags = 0;
+        if (!::GetNamedPipeInfo(handle, &flags, nullptr, nullptr, nullptr))
+            return ::GetLastError() == ERROR_INVALID_HANDLE ? DescriptorKind::Invalid : DescriptorKind::Other;
+        if ((flags & PIPE_TYPE_MESSAGE) != 0) return DescriptorKind::Other;
+        DWORD available = 0;
+        if (::PeekNamedPipe(handle, nullptr, 0, nullptr, &available, nullptr))
+            return available != 0 ? DescriptorKind::PipeReadable : DescriptorKind::PipePending;
+        const auto error = ::GetLastError();
+        if (error == ERROR_BROKEN_PIPE) return DescriptorKind::PipeReadable;
+        if (error == ERROR_INVALID_HANDLE) return DescriptorKind::Invalid;
+        return error == ERROR_ACCESS_DENIED ? DescriptorKind::PipeUnsupported : DescriptorKind::Other;
+    }
+    if (type != FILE_TYPE_DISK) return DescriptorKind::Other;
+    BY_HANDLE_FILE_INFORMATION information{};
+    if (!::GetFileInformationByHandle(handle, &information)) return DescriptorKind::Failed;
+    return (information.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0 ? DescriptorKind::RegularFile : DescriptorKind::Other;
+}
+
+int HostPoll(KernelSocketPoll::Entry* descriptors, int count, int timeoutMilliseconds) {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMilliseconds);
+    for (;;) {
+        int ready = 0;
+        for (int index = 0; index < count; ++index) {
+            auto& entry = descriptors[index];
+            entry.revents = 0;
+            const auto kind = InspectDescriptor(entry.descriptor, entry.events);
+            if (kind == DescriptorKind::Invalid) return -9;
+            if (kind == DescriptorKind::Failed) return -5;
+            if (kind == DescriptorKind::PipeUnsupported) NotImplemented_nid_no_patch("select Windows pipe endpoint or write/exception readiness");
+            if (kind == DescriptorKind::RegularFile) {
+                if ((entry.events & KernelSocketPoll::Urgent) != 0) NotImplemented_nid_no_patch("select regular-file exception readiness");
+                entry.revents = entry.events & (KernelSocketPoll::Readable | KernelSocketPoll::Writable);
+            } else if (kind == DescriptorKind::PipeReadable) entry.revents = KernelSocketPoll::Readable;
+            else if (kind != DescriptorKind::PipePending) UnknownDescriptor(entry.descriptor, g_socketPoller.load() != nullptr);
+            if (entry.revents != 0) ++ready;
+        }
+        const auto now = std::chrono::steady_clock::now();
+        if (ready != 0 || now >= deadline) return ready;
+        std::this_thread::sleep_until(std::min(deadline, now + std::chrono::milliseconds(SelectPollSliceMilliseconds)));
+    }
+}
+
+#else
 
 short HostEventFlags(short events) {
     short flags = 0;
@@ -165,10 +228,7 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
     std::vector<PollGroup> groups;
     if (!kernel.entries.empty()) groups.push_back(std::move(kernel));
     if (!net.entries.empty()) {
-        PollGroup hosts{nullptr, {}, {}};
-#ifndef _WIN32
-        hosts.poll = &HostPoll;
-#endif
+        PollGroup hosts{&HostPoll, {}, {}};
         net.poll = g_socketPoller.load();
         if (net.poll != nullptr) {
             for (auto& socket : net.entries) socket.revents = 0;
@@ -184,7 +244,6 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
                 continue;
             }
             const int descriptor = net.entries[index].descriptor;
-            if (hosts.poll == nullptr) UnknownDescriptor(descriptor, net.poll != nullptr);
             hosts.entries.push_back({descriptor, net.entries[index].events, 0});
             hosts.slots.push_back(net.slots[index]);
             net.entries.erase(net.entries.begin() + static_cast<std::ptrdiff_t>(index));
@@ -196,6 +255,7 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
     const auto start = std::chrono::steady_clock::now();
     const auto deadline = limit == nullptr ? std::chrono::steady_clock::time_point::max()
         : KernelSocketSelect::DeadlineAfter(start, limit->seconds, limit->microseconds);
+    bool firstPoll = true;
     for (;;) {
         int waitMilliseconds = 100;
         if (limit != nullptr) {
@@ -204,6 +264,8 @@ int APS5_VABI select_nid_postfix(int nfds, void* readfds, void* writefds, void* 
             waitMilliseconds = static_cast<int>(std::clamp<std::int64_t>(roundedMilliseconds, 0, 100));
         }
         if (devicesReady) waitMilliseconds = 0;
+        if (firstPoll) waitMilliseconds = 0;
+        firstPoll = false;
         if (groups.empty()) {
             if (waitMilliseconds > 0) std::this_thread::sleep_for(std::chrono::milliseconds(waitMilliseconds));
         } else {

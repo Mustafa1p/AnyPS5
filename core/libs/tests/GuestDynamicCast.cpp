@@ -12,14 +12,14 @@ extern "C" {
 extern const unsigned char _ZTVN10__cxxabiv117__class_type_infoE_nid_postfix[];
 extern const unsigned char _ZTVN10__cxxabiv120__si_class_type_infoE_nid_postfix[];
 void* APS5_VABI __dynamic_cast_nid_postfix(const void*, const void*, const void*, std::ptrdiff_t);
-LibcException::Header* APS5_VABI __cxa_init_primary_exception_nid_postfix(void*, std::type_info*, void (*)(void*));
+LibcException::Header* APS5_VABI __cxa_init_primary_exception_nid_postfix(void*, std::type_info*, LibcException::GuestDestructor) noexcept;
 }
 
 namespace {
 
 void Require(bool value) { if (!value) std::abort(); }
 
-void Destroy(void*) {}
+void APS5_VABI Destroy(void*) {}
 
 const TypeRecord BaseType{_ZTVN10__cxxabiv117__class_type_infoE_nid_postfix + 16, "4Base", nullptr};
 const TypeRecord DerivedType{_ZTVN10__cxxabiv120__si_class_type_infoE_nid_postfix + 16, "7Derived", &BaseType};
@@ -40,6 +40,6 @@ int main() {
     auto* type = reinterpret_cast<std::type_info*>(const_cast<TypeRecord*>(&DerivedType));
     LibcException::Header* header = __cxa_init_primary_exception_nid_postfix(object, type, Destroy);
     Require(header == LibcException::FromObject(object));
-    Require(header->type == type && header->destructor == Destroy && header->adjusted == object);
+    Require(header->type == type && reinterpret_cast<LibcException::GuestDestructor>(header->destructor) == Destroy && header->adjusted == object);
     __cxa_free_exception_nid_postfix(object);
 }

@@ -11,8 +11,8 @@
 
 extern "C" {
 using Handler = void (APS5_VABI*)();
-Handler APS5_VABI _ZSt15set_new_handlerPFvvE_nid_postfix(Handler);
-Handler APS5_VABI _ZSt15get_new_handlerv_nid_postfix();
+Handler APS5_VABI _ZSt15set_new_handlerPFvvE_nid_postfix(Handler) noexcept;
+Handler APS5_VABI _ZSt15get_new_handlerv_nid_postfix() noexcept;
 void* APS5_VABI _Znwm_nid_postfix(std::size_t);
 void* APS5_VABI _Znam_nid_postfix(std::size_t);
 void* APS5_VABI _ZnwmRKSt9nothrow_t_nid_postfix(std::size_t, const void*) noexcept;

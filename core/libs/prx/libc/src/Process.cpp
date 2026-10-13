@@ -32,12 +32,17 @@ std::exception_ptr shutdownFailure;
 std::stop_source shutdownSource;
 std::atomic<bool> exitRequested{false};
 std::atomic<bool> exitStarted{false};
+std::atomic<bool> automaticFinalizationAllowed{true};
 using GuestExitCallback = void (APS5_VABI*)();
 
 void APS5_VABI RunGuestExitCallback(void* callback) {
     reinterpret_cast<GuestExitCallback>(callback)();
 }
 
+}
+
+bool LibcAutomaticFinalizationAllowed_nid_no_patch() noexcept {
+    return automaticFinalizationAllowed.load();
 }
 
 extern "C" std::stop_token LibcShutdownToken_nid_postfix() {
@@ -117,6 +122,7 @@ extern "C" {
     exitRequested.store(true);
     if (exitStarted.exchange(true)) LibcAwaitExit_nid_postfix();
     LibcRunShutdown_nid_postfix();
+    automaticFinalizationAllowed.store(true);
     CxaFinalize_nid_no_patch(nullptr);
     std::exit(code);
 }
@@ -134,12 +140,8 @@ void APS5_VABI exit_nid_postfix(int code) {
     LibcExit_nid_no_patch(status);
 }
 
-[[noreturn]] void abort_nid_postfix(
-    uint64_t arg0, uint64_t arg1, uint64_t arg2,
-    uint64_t arg3, uint64_t arg4, uint64_t arg5
-) {
-    (void)arg0; (void)arg1; (void)arg2;
-    (void)arg3; (void)arg4; (void)arg5;
+[[noreturn]] void APS5_VABI abort_nid_postfix() {
+    automaticFinalizationAllowed.store(false);
     std::fprintf(stderr, "[libc] abort() called from %p\n", __builtin_return_address(0));
     std::fflush(nullptr);
     std::abort();
@@ -153,7 +155,8 @@ int* APS5_VABI __error_nid_postfix() {
     return &errno;
 }
 
-[[noreturn]] void __stack_chk_fail_nid_postfix() {
+[[noreturn]] void APS5_VABI __stack_chk_fail_nid_postfix() {
+    automaticFinalizationAllowed.store(false);
     std::abort();
 }
 
