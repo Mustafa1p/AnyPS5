@@ -41,7 +41,7 @@ void APS5_VABI RunGuestExitCallback(void* callback) {
 
 }
 
-bool LibcAutomaticFinalizationAllowed_nid_no_patch() noexcept {
+extern "C" bool LibcAutomaticFinalizationAllowed_nid_no_patch() noexcept {
     return automaticFinalizationAllowed.load();
 }
 
