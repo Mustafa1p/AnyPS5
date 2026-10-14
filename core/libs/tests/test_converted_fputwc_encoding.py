@@ -127,6 +127,40 @@ def fixture():
     c.stream()
     c.function('fclose')
     c.status(0, 'close and flush the owned stream')
+    c.static('488d3d', 0x9400)
+    c.static('488d35', 0x9448)
+    c.function('fopen')
+    c.emit('4885c0')
+    c.failure('0f84', 'reopen the owned witness for reading only')
+    c.emit('4989c4')
+    c.stream()
+    c.emit('be2000000031d2')
+    c.function('fseek')
+    c.status(0, 'seek read-only witness to guarded offset32')
+    c.position(32, 'read-only witness initial position is32')
+    c.stream()
+    c.function('ferror')
+    c.status(0, 'read-only witness starts without a stream error')
+    for value, _ in VALID:
+        c.set_errno()
+        c.put(value, -1, f'read-only U+{value:04X} returns WEOF')
+        c.error(9, f'read-only U+{value:04X} preserves EBADF9')
+        c.position(32, f'read-only U+{value:04X} does not advance position')
+        c.stream()
+        c.function('ferror')
+        c.emit('85c0')
+        c.failure('0f84', f'read-only U+{value:04X} sets public stream error')
+        c.error(9, f'read-only U+{value:04X} status queries preserve EBADF9')
+        c.stream()
+        c.function('clearerr')
+        c.stream()
+        c.function('ferror')
+        c.status(0, f'clearerr clears read-only U+{value:04X} stream error')
+        c.error(9, f'clearerr preserves read-only U+{value:04X} errno')
+        c.sentinel(0, 256, f'read-only U+{value:04X} preserves guest storage')
+    c.stream()
+    c.function('fclose')
+    c.status(0, 'close the owned read-only stream')
     c.emit('31ff')
     c.function('exit')
     c.emit('0f0b')
@@ -162,6 +196,7 @@ def fixture():
     filename = b'/app0/fputwc-witness.bin\0'
     image[0x9400:0x9400 + len(filename)] = filename
     image[0x9440:0x9444] = b'r+b\0'
+    image[0x9448:0x944b] = b'rb\0'
     image[0x9800:0x9900] = ORIGINAL
     return image, [description for _, description in c.failures]
 
@@ -195,7 +230,7 @@ def main():
     image, contract = fixture()
     source.write_bytes(image)
     command = [str(relinker), '--registry', '--windows', str(source), str(output)]
-    manifest = {'conversion_command': command, 'runtime_command': [str(output)], 'cwd': str(work), 'platform': platform.platform(), 'artifacts': artifacts, 'relinker_sha256': sha256(relinker), 'fixture_script_sha256': sha256(Path(__file__)), 'helper_sha256': sha256(Path(__file__).with_name('test_converted_library_contract.py')), 'source_sha256': sha256(source), 'contract': contract, 'active_checks': len(contract), 'imports': IMPORTS, 'payload_before_hex': ORIGINAL.hex(), 'payload_expected_hex': EXPECTED.hex(), 'claim': 'Bounded existing char16_t/UTF8 project model: four invalid surrogate edges return WEOF/EILSEQ86 and set public stream error with no write, clearerr recovers; independent RFC3629 BMP bytes. No PS5 locale, wider wint_t, stream orientation, concurrent access or full-function claim.'}
+    manifest = {'conversion_command': command, 'runtime_command': [str(output)], 'cwd': str(work), 'platform': platform.platform(), 'artifacts': artifacts, 'relinker_sha256': sha256(relinker), 'fixture_script_sha256': sha256(Path(__file__)), 'helper_sha256': sha256(Path(__file__).with_name('test_converted_library_contract.py')), 'source_sha256': sha256(source), 'contract': contract, 'active_checks': len(contract), 'imports': IMPORTS, 'payload_before_hex': ORIGINAL.hex(), 'payload_expected_hex': EXPECTED.hex(), 'claim': 'Bounded existing char16_t/UTF8 project model: surrogate WEOF/EILSEQ86 with no write and clearerr recovery; independently expected BMP bytes. Four valid BMP characters on an owned read-only stream return WEOF/EBADF9, set public error, preserve position/guarded host bytes and support clearerr before retry. No PS5 locale, wider wint_t, stream orientation, other write-error mappings, concurrent access or full-function claim.'}
     manifest_path = work / 'manifest.json'
     def save():
         manifest_path.write_text(json.dumps(manifest, indent=2) + '\n', encoding='utf-8')
