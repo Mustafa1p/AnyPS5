@@ -276,6 +276,11 @@ int APS5_VABI wprintf_nid_postfix(const char16_t* format, ...) {
 int APS5_VABI fputwc_nid_postfix(char16_t value, FileStream* stream) {
     if (stream == nullptr) { errno = 22; return -1; }
     try {
+        if (value >= 0xd800 && value <= 0xdfff) {
+            stream->SetError();
+            errno = 86;
+            return -1;
+        }
         const std::string bytes = ToUtf8(std::u16string(1, value));
         auto* native = GetNativeStream(stream);
         if (std::fwrite(bytes.data(), 1, bytes.size(), native) != bytes.size()) throw std::runtime_error("stream write failed");
