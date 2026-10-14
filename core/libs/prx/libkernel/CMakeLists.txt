@@ -1239,6 +1239,7 @@ if(BUILD_TESTING)
         endif()
         add_test(NAME guest_flexible_memory_${flexibleMemoryName} COMMAND guest_flexible_memory_budget_tests ${flexibleMemoryName}
             WORKING_DIRECTORY ${flexibleMemoryRun})
+        set_tests_properties(guest_flexible_memory_${flexibleMemoryName} PROPERTIES TIMEOUT 30)
         if(WIN32)
             set_tests_properties(guest_flexible_memory_${flexibleMemoryName} PROPERTIES ENVIRONMENT_MODIFICATION
                 "PATH=path_list_prepend:$<TARGET_FILE_DIR:libkernel>")
