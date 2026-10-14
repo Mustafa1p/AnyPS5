@@ -45,8 +45,8 @@ template<class T> T Resolve(HMODULE module, const char* nid) {
     return reinterpret_cast<T>(reinterpret_cast<void*>(address));
 }
 
-std::vector<unsigned char> Snapshot() {
-    std::ifstream bytes("app0/fputwc-witness.bin", std::ios::binary);
+std::vector<unsigned char> Snapshot(const char* path = "app0/fputwc-witness.bin") {
+    std::ifstream bytes(path, std::ios::binary);
     return {std::istreambuf_iterator<char>(bytes), {}};
 }
 
@@ -100,5 +100,32 @@ int main(int argc, char** argv) {
     const std::array<unsigned char, 13> output{0x41, 0xc3, 0xa9, 0xed, 0x9f, 0xbf, 0xee, 0x80, 0x80, 0x52, 0x53, 0x54, 0x55};
     std::copy(output.begin(), output.end(), expected.begin() + 32);
     Require(Snapshot() == expected, "Independent full guarded host file differs");
+    std::array<char, 64> readPath{"/app0/fputwc-read-only.bin"};
+    std::array<char, 16> readMode{"rb"};
+    const auto readPathCopy = readPath;
+    const auto readModeCopy = readMode;
+    stream = api.open(readPath.data(), readMode.data());
+    Require(stream != nullptr, "Read-only guest stream open failed");
+    Require(readPath == readPathCopy && readMode == readModeCopy, "Read-only open string input changed");
+    Require(api.seek(stream, 32, 0) == 0 && api.tell(stream) == 32 && api.error(stream) == 0, "Read-only initial stream state failed");
+    const std::vector<unsigned char> readExpected(256, 0xaa);
+    Require(Snapshot("app0/fputwc-read-only.bin") == readExpected, "Read-only initial host file differs");
+    for (const auto value : valid) {
+        for (int attempt = 0; attempt != 2; ++attempt) {
+            *api.guestErrno() = 123;
+            Require(api.put(value, stream) == -1, "Read-only write was accepted");
+            Require(*api.guestErrno() == 9, "Read-only write did not preserve guest EBADF");
+            Require(api.error(stream) != 0, "Read-only write did not set stream error");
+            Require(api.tell(stream) == 32, "Read-only write changed file position");
+            Require(api.flush(stream) == 0 && *api.guestErrno() == 9, "Read-only flush changed write errno");
+            Require(Snapshot("app0/fputwc-read-only.bin") == readExpected, "Read-only write changed host file bytes");
+            api.clear(stream);
+            Require(api.error(stream) == 0 && *api.guestErrno() == 9, "Read-only clearerr did not clear flag and preserve errno");
+        }
+    }
+    Require(api.close(stream) == 0, "Read-only close failed");
+    Require(readPath == readPathCopy && readMode == readModeCopy, "Read-only stream modified open inputs");
+    Require(Snapshot("app0/fputwc-read-only.bin") == readExpected && Snapshot() == expected, "Final guarded files differ");
     std::puts("fputwc encoding edges, error/clearerr recovery and guarded13-byte file witness PASS");
+    std::puts("fputwc read-only EBADF, error/clearerr retries and unchanged256-byte file PASS");
 }

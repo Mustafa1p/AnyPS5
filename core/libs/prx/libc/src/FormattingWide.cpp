@@ -283,7 +283,12 @@ int APS5_VABI fputwc_nid_postfix(char16_t value, FileStream* stream) {
         }
         const std::string bytes = ToUtf8(std::u16string(1, value));
         auto* native = GetNativeStream(stream);
-        if (std::fwrite(bytes.data(), 1, bytes.size(), native) != bytes.size()) throw std::runtime_error("stream write failed");
+        if (std::fwrite(bytes.data(), 1, bytes.size(), native) != bytes.size()) {
+            const int error = errno;
+            stream->SyncStatus();
+            errno = error;
+            return -1;
+        }
         stream->SyncStatus();
         return value;
     } catch (const std::exception&) {
