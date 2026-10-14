@@ -63,8 +63,8 @@ int main(int argc, char** argv) {
 #endif
     std::array<wchar_t, 32768> actual{};
     Require(module != nullptr && GetModuleFileNameW(module, actual.data(), actual.size()) != 0 && std::filesystem::equivalent(supplied, actual.data()), "Wrong physical libc");
-    const std::array<char, 64> path{"/app0/fputwc-witness.bin"};
-    const std::array<char, 16> mode{"r+b"};
+    std::array<char, 64> path{"/app0/fputwc-witness.bin"};
+    std::array<char, 16> mode{"r+b"};
     const auto pathCopy = path;
     const auto modeCopy = mode;
     FileStream* stream = api.open(path.data(), mode.data());
